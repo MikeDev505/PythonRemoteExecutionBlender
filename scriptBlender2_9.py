@@ -28,11 +28,13 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
                     try:
                         data = s.recv(1024)
                         commandString = data.decode('utf-8')
-                        print("Commmand: ", commandString)
+                        print("Commmand: ", commandString)                        
                         scriptResultString = self.executeScript(commandString)
                         print("scriptResultString: ", scriptResultString)
                         response = scriptResultString.encode('utf-8')
                         s.send(response)
+                    except:
+                        print("błąd")
                     finally:
                         s.close()
                         self.readReadySockets.remove(s)
@@ -42,7 +44,7 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
 
         return {'PASS_THROUGH'}
 
-    def executeScript(self, commandString):
+    def executeScript(self, commandString):        
         loc = {}
         exec(commandString, globals(), loc)
         scriptResult = loc['scriptResult']
@@ -56,7 +58,7 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
         self.serverSocket.bind(('localhost', self.port))
         self.readReadySockets = [self.serverSocket]
         self.serverSocket.listen(1)
-        self.timer = context.window_manager.event_timer_add(0.5, window=context.window)
+        self.timer = context.window_manager.event_timer_add(0.1, window=context.window)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
