@@ -1,4 +1,4 @@
-# RemoteExecutionHubClient ver 2.0.0
+# RemoteExecutionHubClient ver 2.1.0
 import bpy
 import struct
 import threading
@@ -6,6 +6,8 @@ import time
 import json
 import socket
 import sys
+import array
+import numpy as np
 import select
 import mathutils
 import math
@@ -41,19 +43,20 @@ class RemoteExecutionHubClientThread(threading.Thread):
     def start(self):
 
         # Start the thread.
-        print('Starting RemoteExecutionHubClient thread')
+        self.log('Starting RemoteExecutionHubClient thread')
         self.running = True
         threading.Thread.start(self)
 
     def stop(self):
 
         # Stop the thread.
-        print('Stopping RemoteExecutionHubClient thread')
+        self.log('Stopping RemoteExecutionHubClient thread')
         self.running = False
 
     @staticmethod
     def log(messsage):
-        print(messsage)
+        #print(messsage)
+        return
 
     def run(self):
 
@@ -86,13 +89,11 @@ class RemoteExecutionHubClientThread(threading.Thread):
 
     def send_string(self, message):
         buf = bytes(message, "utf-8")
-        print("send_string: " + message)
         self.send_bytes(buf)
 
     def send_bytes(self, msg):
         # Prefix each message with a 4-byte length (network byte order)
         new_message = struct.pack('<I', len(msg)) + msg
-        #print("send_bytes: " + new_message)
         self.clientSocket.sendall(new_message)
 
     def recv_string(self):
@@ -129,6 +130,11 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
     bl_label = 'Remote Execution Hub'
     timer = None
 
+    @staticmethod
+    def log(messsage):
+        # print(messsage)
+        return
+
     def modal(self, context, event):
 
         # Stop the thread when ESCAPE is pressed.
@@ -143,9 +149,9 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
             if self.remoteExecutionHubClientThread.script_request is not None:
                 script_request = self.remoteExecutionHubClientThread.script_request
                 self.remoteExecutionHubClientThread.script_request = None
-                print("Recived script")
+                self.log("Recived script")
                 self.remoteExecutionHubClientThread.script_response = self.execute_script(script_request)
-                print("executed script: " + self.remoteExecutionHubClientThread.script_response)
+                self.log("executed script: " + self.remoteExecutionHubClientThread.script_response)
         return {'PASS_THROUGH'}
 
     def execute(self, context):
@@ -159,11 +165,13 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
     def execute_script(self, command_string):
         try:
             loc = {}
+            #print('cmd: ' + command_string)
             exec(command_string, globals(), loc)
             script_result = loc['scriptResult']
             return script_result
         except:
-            return ""
+            print(sys.exc_info()[0])
+            return repr(sys.exc_info()[0])
             pass
 
 def register():
@@ -173,6 +181,122 @@ def register():
 
 def unregister():
     bpy.utils.unregister_class(RemoteExecutionHubConnection)
+
+
+########################################################
+
+
+# plugin Rigify
+class RigifyController:
+    def __init__(self, armatureName):
+        self.armature = bpy.data.objects[armatureName]
+
+        bone_names_hand_l = ['hand_ik.L', 'thumb.01_master.L', 'f_index.01_master.L', 'f_middle.01_master.L',
+                             'f_ring.01_master.L', 'f_pinky.01_master.L']
+        bone_names_hand_r = ['hand_ik.R', 'thumb.01_master.R', 'f_index.01_master.R', 'f_middle.01_master.R',
+                             'f_ring.01_master.R', 'f_pinky.01_master.R']
+        self.handBones_l = self.get_hand_bones(self.armature, bone_names_hand_l)
+        self.handBones_r = self.get_hand_bones(self.armature, bone_names_hand_r)
+        self.bone_position = {}
+        self.bone_rotation = {}
+
+        self.set_bone_rotation_mode(['head', 'chest', 'foot_ik.R', 'foot_ik.L'] + bone_names_hand_l + bone_names_hand_r)
+
+    # kontroler do poruszania palcem - zamykanie i na boki
+    @staticmethod
+    def finger_control(finger_close, finger_rot, poseBone):
+        poseBone.scale.y = np.interp(finger_close, [-1, 0, 1], [0.5, 0.9, 1.05])  # zamykanie palca
+        poseBone.rotation_euler.x = np.interp(finger_close, [-1, 0, 1], [.9, 0, -.1])  # zamykanie palca
+        poseBone.rotation_euler.z = np.interp(finger_rot, [-1, 1], [.3, -.3])  # poruszanie na boki
+        return
+
+    # kontroler do ustawiania pozycji 2D ręki (otwarta/zamknięta, zciśnięta/rozwarta)
+    def hand_control(self, finger_close, finger_rot, fingersPostBone):
+        self.finger_control(np.interp(finger_close, [-1, 1], [-.4, .5]), np.interp(finger_rot, [-1, 1], [-1, 1]),
+                            fingersPostBone[0])
+        self.finger_control(finger_close, np.interp(finger_rot, [-1, 1], [-1, 1]), fingersPostBone[1])
+        self.finger_control(finger_close, np.interp(finger_rot, [-1, 1], [-.5, .5]), fingersPostBone[2])
+        self.finger_control(finger_close, np.interp(finger_rot, [-1, 1], [.5, -.5]), fingersPostBone[3])
+        self.finger_control(finger_close, np.interp(finger_rot, [-1, 1], [1, -1]), fingersPostBone[4])
+
+    @staticmethod
+    def get_hand_bones(armature, bonesNames):
+        bones = []
+        for boneName in bonesNames:
+            bones.append(armature.pose.bones.get(boneName))
+        return bones
+
+    def set_bone_rotation_mode(self, boneNames):
+        for boneName in boneNames:
+            bp = self.armature.pose.bones.get(boneName)
+            bp.rotation_mode = 'XYZ'
+
+    # kontrola 2d gestu ręki(otwarta/zamknięta, zciśnięta/rozwarta)
+    def hand_l(self, finger_close, finger_rot):
+        self.hand_control(finger_close, finger_rot, self.handBones_l[1:])
+
+    # kontrola 2d gestu ręki(otwarta/zamknięta, zciśnięta/rozwarta)
+    def hand_r(self, finger_close, finger_rot):
+        self.hand_control(finger_close, finger_rot, self.handBones_r[1:])
+
+    # zapisuje pozycję kości
+    def save_bone_position(self, bone_name):
+        pb = self.armature.pose.bones.get(bone_name)
+        mw = self.armature.convert_space(pose_bone=pb,
+                                         matrix=pb.matrix,
+                                         from_space='POSE',
+                                         to_space='WORLD')
+
+        self.bone_position[bone_name] = mw.translation
+
+    # przywracam zapisaną pozycję kości
+    def restore_bone_position(self, bone_name):
+        self.set_bone_position(bone_name, self.bone_position[bone_name])
+
+    # ustawiam pozycję kości
+    def set_bone_position(self, bone_name, position):
+        pb = self.armature.pose.bones.get(bone_name)
+        mw = self.armature.convert_space(pose_bone=pb,
+                                         matrix=pb.matrix,
+                                         from_space='POSE',
+                                         to_space='WORLD')
+        mw.translation = position
+
+        pb.matrix = self.armature.convert_space(pose_bone=pb,
+                                                matrix=mw,
+                                                from_space='WORLD',
+                                                to_space='POSE')
+
+    # przesówam kość o 'd_position' względem zapisanej pozycji
+    def add_bone_position(self, bone_name, d_position):
+        pb = self.armature.pose.bones.get(bone_name)
+        old_position = self.bone_position[bone_name]
+        new_position = (
+        old_position[0] + d_position[0], old_position[1] + d_position[1], old_position[2] + d_position[2])
+        self.set_bone_position(bone_name, new_position)
+
+    # zapisuje rotacje kości
+    def save_bone_rotation(self, bone_name):
+        pb = self.armature.pose.bones.get(bone_name)
+        self.bone_rotation[bone_name] = pb.rotation_euler.copy()
+
+    def restore_bone_rotation(self, bone_name):
+        pb = self.armature.pose.bones.get(bone_name)
+        pb.rotation_euler = self.bone_rotation[bone_name]
+
+    def set_bone_rotation(self, bone_name, rotation):
+        pb = self.armature.pose.bones.get(bone_name)
+        pb.rotation_euler = rotation
+
+    def add_bone_rotation(self, bone_name, d_rotation):
+        pb = self.armature.pose.bones.get(bone_name)
+        old_rotation = self.bone_rotation[bone_name]
+        new_rotation = (
+        old_rotation[0] + d_rotation[0], old_rotation[1] + d_rotation[1], old_rotation[2] + d_rotation[2])
+        self.set_bone_rotation(bone_name, new_rotation)
+
+
+rigifyControler = RigifyController('rig')
 
 register()
 
