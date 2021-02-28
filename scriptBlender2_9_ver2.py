@@ -1,4 +1,4 @@
-# RemoteExecutionHubClient ver 2.1.0
+# RemoteExecutionHubClient ver 2.1.1
 import bpy
 import struct
 import threading
@@ -13,7 +13,7 @@ import mathutils
 import math
 
 
-#Stuktura opisująca konfig
+# Stuktura opisująca konfig
 class RemoteExecutionConfig:
     def __init__(self):
         self.clientName = "blender"
@@ -55,7 +55,7 @@ class RemoteExecutionHubClientThread(threading.Thread):
 
     @staticmethod
     def log(messsage):
-        #print(messsage)
+        # print(messsage)
         return
 
     def run(self):
@@ -158,14 +158,14 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
         print("start clienta")
         self.remoteExecutionHubClientThread.start()
 
-        self.timer = context.window_manager.event_timer_add(0.02,  window=context.window)
+        self.timer = context.window_manager.event_timer_add(0.02, window=context.window)
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
     def execute_script(self, command_string):
         try:
             loc = {}
-            #print('cmd: ' + command_string)
+            print('cmd: ' + command_string)
             exec(command_string, globals(), loc)
             script_result = loc['scriptResult']
             return script_result
@@ -174,10 +174,12 @@ class RemoteExecutionHubConnection(bpy.types.Operator):
             return repr(sys.exc_info()[0])
             pass
 
+
 def register():
     print("register")
     bpy.utils.register_class(RemoteExecutionHubConnection)
     print("registered")
+
 
 def unregister():
     bpy.utils.unregister_class(RemoteExecutionHubConnection)
@@ -199,15 +201,16 @@ class RigifyController:
         self.handBones_r = self.get_hand_bones(self.armature, bone_names_hand_r)
         self.bone_position = {}
         self.bone_rotation = {}
-
+        self.is_recording = False
         self.set_bone_rotation_mode(['head', 'chest', 'foot_ik.R', 'foot_ik.L'] + bone_names_hand_l + bone_names_hand_r)
 
     # kontroler do poruszania palcem - zamykanie i na boki
-    @staticmethod
-    def finger_control(finger_close, finger_rot, poseBone):
+    def finger_control(self, finger_close, finger_rot, poseBone):
         poseBone.scale.y = np.interp(finger_close, [-1, 0, 1], [0.5, 0.9, 1.05])  # zamykanie palca
         poseBone.rotation_euler.x = np.interp(finger_close, [-1, 0, 1], [.9, 0, -.1])  # zamykanie palca
         poseBone.rotation_euler.z = np.interp(finger_rot, [-1, 1], [.3, -.3])  # poruszanie na boki
+        self.insert_keyframe_rotation_if_recording(poseBone)
+        self.insert_keyframe_scale_if_recording(poseBone)
         return
 
     # kontroler do ustawiania pozycji 2D ręki (otwarta/zamknięta, zciśnięta/rozwarta)
@@ -266,13 +269,14 @@ class RigifyController:
                                                 matrix=mw,
                                                 from_space='WORLD',
                                                 to_space='POSE')
+        self.insert_keyframe_location_rotation_if_recording(pb)
 
     # przesówam kość o 'd_position' względem zapisanej pozycji
     def add_bone_position(self, bone_name, d_position):
         pb = self.armature.pose.bones.get(bone_name)
         old_position = self.bone_position[bone_name]
         new_position = (
-        old_position[0] + d_position[0], old_position[1] + d_position[1], old_position[2] + d_position[2])
+            old_position[0] + d_position[0], old_position[1] + d_position[1], old_position[2] + d_position[2])
         self.set_bone_position(bone_name, new_position)
 
     # zapisuje rotacje kości
@@ -287,13 +291,54 @@ class RigifyController:
     def set_bone_rotation(self, bone_name, rotation):
         pb = self.armature.pose.bones.get(bone_name)
         pb.rotation_euler = rotation
+        self.insert_keyframe_rotation_if_recording(pb)
 
     def add_bone_rotation(self, bone_name, d_rotation):
         pb = self.armature.pose.bones.get(bone_name)
         old_rotation = self.bone_rotation[bone_name]
         new_rotation = (
-        old_rotation[0] + d_rotation[0], old_rotation[1] + d_rotation[1], old_rotation[2] + d_rotation[2])
+            old_rotation[0] + d_rotation[0], old_rotation[1] + d_rotation[1], old_rotation[2] + d_rotation[2])
         self.set_bone_rotation(bone_name, new_rotation)
+
+    def reset_bone_rotation(self, bone_name, x, y, z):
+        pb = self.armature.pose.bones.get(bone_name)
+        rotation = pb.rotation_euler.copy()
+        if x:
+            self.set_bone_rotation(bone_name, (0, rotation[1], rotation[2]))
+        if y:
+            self.set_bone_rotation(bone_name, (rotation[0], 0, rotation[2]))
+        if z:
+            self.set_bone_rotation(bone_name, (rotation[0], rotation[1], 0))
+
+    def start_record(self):
+        self.is_recording = True
+
+    def stop_record(self):
+        self.is_recording = False
+
+    def toggle_record(self):
+        self.is_recording = not self.is_recording
+        return self.is_recording
+
+    def insert_keyframe_location_rotation_if_recording(self, pose_bone):
+        if self.is_recording:
+            pose_bone.keyframe_insert(data_path='location')
+
+    def insert_keyframe_rotation_if_recording(self, pose_bone):
+        if self.is_recording:
+            pose_bone.keyframe_insert(data_path='rotation_euler')
+
+    def insert_keyframe_scale_if_recording(self, pose_bone):
+        if self.is_recording:
+            pose_bone.keyframe_insert(data_path='scale')
+
+    def inc_frame(self):
+        bpy.context.scene.frame_current += 30
+
+    def dec_frame(self):
+        bpy.context.scene.frame_current -= 30
+        if bpy.context.scene.frame_current < 1:
+            bpy.context.scene.frame_current = 1
 
 
 rigifyControler = RigifyController('rig')
